@@ -70,6 +70,8 @@ class CLIPLayer(nn.Module):
         x += residue
 
         return x
+
+
 class CLIP(nn.Module):
     def __init__(self):
         super().__init__()
@@ -80,9 +82,6 @@ class CLIP(nn.Module):
         ])
 
         self.layernorm = nn.LayerNorm(768)
-
-
-
 
     def forward(self, tokens: torch.LongTensor) -> torch.FloatTensor:
         tokens = tokens.type(torch.long)
