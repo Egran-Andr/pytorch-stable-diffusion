@@ -81,7 +81,80 @@ def generate(
 
         latents_shape = (1, 4, LATENTS_HEIGHT, LATENTS_WIDTH)
 
+    if input_image:
+        encoder = models["encoder"]
+        encoder.to(device)
 
+        input_image_tensor = input_image.resize((WIDTH, HEIGHT))
+        # (Height, Width, Channel)
+        input_image_tensor = np.array(input_image_tensor)
+        # (Height, Width, Channel) -> (Height, Width, Channel)
+        input_image_tensor = torch.tensor(input_image_tensor, dtype=torch.float32)
+        # (Height, Width, Channel) -> (Height, Width, Channel)
+        input_image_tensor = rescale(input_image_tensor, (0, 255), (-1, 1))
+        # (Height, Width, Channel) -> (Batch_Size, Height, Width, Channel)
+        input_image_tensor = input_image_tensor.unsqueeze(0)
+        # (Batch_Size, Height, Width, Channel) -> (Batch_Size, Channel, Height, Width)
+        input_image_tensor = input_image_tensor.permute(0, 3, 1, 2)
+
+        # (Batch_Size, 4, Latents_Height, Latents_Width)
+        encoder_noise = torch.randn(latents_shape, generator=generator, device=device)
+        # (Batch_Size, 4, Latents_Height, Latents_Width)
+        # run  the image through the encoder of the VAE
+        latents = encoder(input_image_tensor, encoder_noise)
+
+        # Add noise to the latents (the encoded input image)
+        # (Batch_Size, 4, Latents_Height, Latents_Width)
+        sampler.set_strength(strength=strength)
+        latents = sampler.add_noise(latents, sampler.timesteps[0])
+
+        to_idle(encoder)
+    else:
+        # (Batch_Size, 4, Latents_Height, Latents_Width)
+        # If text to image -> start with random noice level N(0,I)
+        latents = torch.randn(latents_shape, generator=generator, device=device)
+
+    diffusion = models["diffusion"]
+    diffusion.to(device)
+
+    timesteps = tqdm(sampler.timesteps)
+
+    for i, timestep in enumerate(timesteps):
+        # (1, 320)
+        time_embedding = get_time_embedding(timestep).to(device)
+
+        # (Batch_Size, 4, Latents_Height, Latents_Width)
+        model_input = latents
+
+        if do_cfg:
+            # (Batch_Size, 4, Latents_Height, Latents_Width) -> (2 * Batch_Size, 4, Latents_Height, Latents_Width)
+            model_input = model_input.repeat(2, 1, 1, 1)
+
+        # model_output is the predicted noise
+        # (Batch_Size, 4, Latents_Height, Latents_Width) -> (Batch_Size, 4, Latents_Height, Latents_Width)
+        model_output = diffusion(model_input, context, time_embedding)
+
+        if do_cfg:
+            output_cond, output_uncond = model_output.chunk(2)
+            model_output = cfg_scale * (output_cond - output_uncond) + output_uncond
+
+        # (Batch_Size, 4, Latents_Height, Latents_Width) -> (Batch_Size, 4, Latents_Height, Latents_Width)
+        # remove the noise predicted by UNET
+        latents = sampler.step(timestep, latents, model_output)
+
+    to_idle(diffusion)
+
+    decoder = models["decoder"]
+    decoder.to(device)
+    # (Batch_Size, 4, Latents_Height, Latents_Width) -> (Batch_Size, 3, Height, Width)
+    images = decoder(latents)
+    to_idle(decoder)
+
+    images = rescale(images, (-1, 1), (0, 255), clamp=True)
+    # (Batch_Size, Channel, Height, Width) -> (Batch_Size, Height, Width, Channel)
+    images = images.permute(0, 2, 3, 1)
+    images = images.to("cpu", torch.uint8).numpy()
+    return images[0]
 
 
 def rescale(x, old_range, new_range, clamp=False):
